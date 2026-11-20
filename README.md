@@ -39,7 +39,9 @@ cargo test
 
 ## Limits
 
-- **Visibility:** lights pass through walls (there are no shadows), and zombies can be heard but not seen through walls only because the fog is dark, not because of any line-of-sight check.
+- **No sound** yet.
+- **Lights pass through walls:** there are no shadows.
+- **Zombies always know where you are:** they follow the flow field and never need to see you.
 - **Single-threaded** and no SIMD.
 - **Art:** all of it is procedural pixel art made from rectangles and noise.
 
