@@ -92,7 +92,8 @@ fn rifle_is_automatic_and_uses_ammo() {
     g.dm.owned[RIFLE] = true;
     g.dm.bullets = 30;
     g.select(RIFLE);
-    for _ in 0..60 {
+    // 1.5 s: the first ~0.25 s is the switch animation (can't fire mid-swap)
+    for _ in 0..90 {
         g.update(1.0 / 60.0, FIRE, 0.0);
     }
     assert!(g.dm.bullets < 22, "bullets left {}", g.dm.bullets);
@@ -104,4 +105,31 @@ fn renders_with_zombies_on_screen() {
     g.dm.zombies.push(zombie(4.5, 1.5, 100.0));
     g.render();
     assert!(g.stats.sprites_drawn >= 1);
+}
+
+#[test]
+fn kills_leave_blood_on_the_floor_not_in_the_air() {
+    let mut g = game();
+    g.dm.zombies.push(zombie(4.5, 1.5, 10.0));
+    g.update(1.0 / 60.0, FIRE, 0.0);
+    assert!(g.dm.blood.iter().filter(|&&b| b > 0).count() > 20, "no blood decal painted");
+    // the floor right under the zombie is now red-tinted
+    let clean = deadmaze::tex::rgba(100, 100, 100, 255);
+    let tinted = g.blood_at(clean, 4.5, 1.5);
+    assert!((tinted & 0xff) > ((tinted >> 8) & 0xff), "floor not tinted");
+}
+
+#[test]
+fn view_model_draws_in_3d() {
+    let mut g = game();
+    g.opt.minimap = false;
+    g.render();
+    // the lower right of the screen is covered by arm and gun pixels
+    let (w, h) = (g.w, g.h);
+    let mut differs = 0;
+    let before = g.fb.clone();
+    g.dm.kick = 1.0; // recoil moves the model
+    g.render();
+    for y in h / 2..h { for x in w / 2..w { if g.fb[y * w + x] != before[y * w + x] { differs += 1; } } }
+    assert!(differs > 100, "recoil should move the gun ({differs} px changed)");
 }

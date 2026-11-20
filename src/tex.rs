@@ -254,10 +254,11 @@ fn corpse() -> Vec<u32> {
     let mut s = vec![0; T * T];
     for y in 52..64 {
         for x in 10..54 {
-            let d = ((x as f32 - 32.0) / 22.0).powi(2) + ((y as f32 - 58.5) / 5.5).powi(2);
+            let d = ((x as f32 - 32.0) / 18.0).powi(2) + ((y as f32 - 59.0) / 4.5).powi(2);
             if d < 1.0 {
-                let pool = noise(x as u32 / 2, y as u32, 40) > 0.55;
-                s[y * T + x] = shade(if pool { [110.0, 16.0, 14.0] } else { [92.0, 80.0, 66.0] }, 0.8 + 0.2 * noise(x as u32, y as u32, 41));
+                // the body only: the blood is painted flat on the floor instead
+                let shirt = noise(x as u32 / 3, y as u32, 40) > 0.5;
+                s[y * T + x] = shade(if shirt { [92.0, 78.0, 64.0] } else { [96.0, 120.0, 84.0] }, 0.7 + 0.25 * noise(x as u32, y as u32, 41));
             }
         }
     }

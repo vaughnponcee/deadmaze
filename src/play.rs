@@ -11,6 +11,7 @@ use crate::engine::{Game, FIRE, PLAYER_RADIUS};
 use crate::map::{Rng, SpriteKind};
 use crate::ray::cast;
 use crate::tex::{rgba, T};
+use crate::viewmodel::{self, Mesh, Pose};
 
 pub const PISTOL: usize = 0;
 pub const SHOTGUN: usize = 1;
@@ -76,7 +77,19 @@ pub struct Dm {
     pub pickup: u32,       // which loot was picked up last (SpriteKind as u32)
     pub pickup_n: u32,     // increments on every pickup, for the HUD
     pub rng: Rng,
+    // view model
+    pub sway: f32,
+    pub switch_t: f32, // 1 -> 0 while the old gun goes down and the new one comes up
+    pub prev_gun: usize,
+    pub last_gun: usize,
+    pub vm: Vec<(Mesh, [f32; 3])>,
+    pub vdepth: Vec<f32>,
+    /// blood on the floor: BLOOD_RES texels per map cell, 0 = clean
+    pub blood: Vec<u8>,
+    pub blood_w: usize,
 }
+
+pub const BLOOD_RES: usize = 8;
 
 impl Default for Dm {
     fn default() -> Dm {
@@ -86,6 +99,8 @@ impl Default for Dm {
             cool: 0.0, muzzle: 0.0, kick: 0.0, hurt: 0.0, bob: 0.0, fire_held: false,
             zombies: Vec::with_capacity(64), loot: Vec::with_capacity(32),
             flow: vec![], flow_cell: (-1, -1), pickup: 0, pickup_n: 0, rng: Rng::new(12345),
+            sway: 0.0, switch_t: 0.0, prev_gun: 0, last_gun: 0,
+            vm: (0..3).map(viewmodel::build).collect(), vdepth: vec![], blood: vec![], blood_w: 0,
         }
     }
 }
@@ -95,7 +110,8 @@ const MAX_ALIVE: usize = 28;
 
 impl Game {
     pub fn seed_play(&mut self, seed: u32) {
-        self.dm = Dm { rng: Rng::new(seed ^ 0x9e37_79b9), ..Dm::default() };
+        let bw = self.map.w * BLOOD_RES;
+        self.dm = Dm { rng: Rng::new(seed ^ 0x9e37_79b9), blood: vec![0; bw * self.map.h * BLOOD_RES], blood_w: bw, ..Dm::default() };
     }
 
     pub fn alive(&self) -> usize {
@@ -117,8 +133,16 @@ impl Game {
     }
 
     /// Called from update() after the player has moved.
-    pub(crate) fn play(&mut self, dt: f32, input: u32) {
+    pub(crate) fn play(&mut self, dt: f32, input: u32, mouse_dx: f32) {
         let d = &mut self.dm;
+        // view model: lag behind the mouse, then settle
+        d.sway += ((-mouse_dx * 0.004).clamp(-0.12, 0.12) - d.sway) * (dt * 10.0).min(1.0);
+        if d.gun != d.last_gun {
+            d.prev_gun = d.last_gun;
+            d.last_gun = d.gun;
+            d.switch_t = 1.0;
+        }
+        d.switch_t = (d.switch_t - dt / 0.4).max(0.0);
         d.cool -= dt;
         d.muzzle = (d.muzzle - dt).max(0.0);
         d.kick = (d.kick - dt * 5.0).max(0.0);
@@ -298,7 +322,7 @@ impl Game {
         let gun = &GUNS[self.dm.gun];
         let pressed = fire && (gun.auto || !self.dm.fire_held);
         self.dm.fire_held = fire;
-        if !pressed || self.dm.cool > 0.0 {
+        if !pressed || self.dm.cool > 0.0 || self.dm.switch_t > 0.35 {
             return;
         }
         match self.dm.gun {
@@ -309,7 +333,7 @@ impl Game {
             _ => {}
         }
         self.dm.cool = gun.cooldown;
-        self.dm.muzzle = 0.06;
+        self.dm.muzzle = 0.045;
         self.dm.kick = gun.kick;
         for p in 0..gun.pellets {
             let off = if gun.pellets > 1 {
@@ -355,9 +379,12 @@ impl Game {
         }
         z.hp -= dmg;
         z.flash = 1.0;
+        let (zx0, zy0) = (z.x, z.y);
+        let r = 0.08 + self.dm.rng.f32() * 0.06;
+        self.splat(zx0 + angle.cos() * 0.25, zy0 + angle.sin() * 0.25, r, 150);
         // knockback
         let (kx, ky) = (angle.cos() * 0.06, angle.sin() * 0.06);
-        let (zx, zy) = (z.x + kx, z.y + ky);
+        let (zx, zy) = (zx0 + kx, zy0 + ky);
         if !self.blocked(zx, zy, ZOMBIE_R) {
             let z = &mut self.dm.zombies[i];
             z.x = zx;
@@ -365,6 +392,12 @@ impl Game {
         }
         let z = self.dm.zombies[i];
         if z.hp <= 0.0 {
+            // a pool where it fell: a few overlapping blobs, not a circle
+            for _ in 0..5 {
+                let (ox, oy) = ((self.dm.rng.f32() - 0.5) * 0.5, (self.dm.rng.f32() - 0.5) * 0.5);
+                let r = 0.14 + self.dm.rng.f32() * 0.16;
+                self.splat(z.x + ox, z.y + oy, r, 230);
+            }
             self.dm.kills += 1;
             self.dm.score += 100 + self.dm.wave * 10;
             // drops
@@ -435,17 +468,32 @@ impl Game {
     /// Gun view model, muzzle flash and the hurt tint, drawn over the 3D view.
     pub(crate) fn overlay(&mut self) {
         let (w, h) = (self.w as f32, self.h as f32);
-        let size = h * 0.62;
-        let bob_x = (self.dm.bob).sin() * h * 0.012;
-        let bob_y = (self.dm.bob * 2.0).sin().abs() * h * 0.014;
-        let x0 = w * 0.5 - size * 0.5 + bob_x + size * 0.18;
-        let y0 = h - size * 0.78 + bob_y + self.dm.kick * h * 0.05;
+        let _ = w;
+        let d = &self.dm;
+        let t = self.time;
+        // pose: walk bob, idle breathing, mouse sway, recoil, weapon switch
+        let bob_x = d.bob.sin() * 0.008;
+        let bob_y = (d.bob * 2.0).sin().abs() * 0.007 + (t * 1.7).sin() * 0.002;
+        let drop = if d.switch_t > 0.0 { (std::f32::consts::PI * (1.0 - d.switch_t)).sin() * 0.16 } else { 0.0 };
+        let shown = if d.switch_t > 0.5 { d.prev_gun } else { d.gun };
+        let kick = d.kick.min(1.0);
+        let pose = Pose {
+            offset: [0.1 + bob_x - d.sway * 0.1, -0.12 - bob_y - drop - kick * 0.01, 0.36 - kick * 0.04],
+            pitch: kick * 0.2 - drop * 1.2,
+            yaw: -0.06 - d.sway,
+            roll: d.sway * 0.6 + d.bob.sin() * 0.015,
+        };
         let l = self.light_at(self.x, self.y);
-        let l = [l[0].clamp(0.45, 1.2), l[1].clamp(0.42, 1.2), l[2].clamp(0.4, 1.2)];
+        let l = [l[0].clamp(0.5, 1.25), l[1].clamp(0.46, 1.2), l[2].clamp(0.44, 1.15)];
+        let (mesh, muzzle) = std::mem::take(&mut self.dm.vm[shown]);
+        let mut depth = std::mem::take(&mut self.dm.vdepth);
+        let (mx, my) = viewmodel::draw(&mut self.fb, &mut depth, self.w, self.h, &mesh, muzzle, &pose, l);
+        self.dm.vm[shown] = (mesh, muzzle);
+        self.dm.vdepth = depth;
         if self.dm.muzzle > 0.0 {
-            self.blit_tex(self.tex.guns.len() - 1, x0 - size * 0.12, y0 - size * 0.42, size, [1.4, 1.4, 1.4]);
+            let size = h * if shown == 1 { 0.22 } else { 0.15 };
+            self.blit_tex(self.tex.guns.len() - 1, mx - size * 0.5, my - size * 0.55, size, [1.4, 1.4, 1.4]);
         }
-        self.blit_tex(self.dm.gun, x0, y0, size, l);
         if self.dm.hurt > 0.0 {
             // red tint, stronger toward the edges
             let (wi, hi) = (self.w, self.h);
@@ -463,6 +511,51 @@ impl Game {
                 }
             }
         }
+    }
+
+    /// Paint blood into the floor decal grid.
+    pub fn splat(&mut self, x: f32, y: f32, r: f32, amount: u8) {
+        let d = &mut self.dm;
+        if d.blood.is_empty() {
+            return;
+        }
+        let res = BLOOD_RES as f32;
+        let (bw, bh) = (d.blood_w as i32, (d.blood.len() / d.blood_w) as i32);
+        let (cx, cy, rr) = (x * res, y * res, r * res);
+        for ty in (cy - rr - 1.0) as i32..=(cy + rr + 1.0) as i32 {
+            for tx in (cx - rr - 1.0) as i32..=(cx + rr + 1.0) as i32 {
+                if tx < 0 || ty < 0 || tx >= bw || ty >= bh {
+                    continue;
+                }
+                let dd = ((tx as f32 + 0.5 - cx).powi(2) + (ty as f32 + 0.5 - cy).powi(2)).sqrt() / rr.max(0.5);
+                // ragged edge: noise decides the last bit of the radius
+                let edge = 0.7 + 0.3 * d.rng.f32();
+                if dd < edge {
+                    let i = (ty * bw + tx) as usize;
+                    d.blood[i] = d.blood[i].max((amount as f32 * (1.0 - dd * 0.4)) as u8);
+                }
+            }
+        }
+    }
+
+    /// Floor texel with any blood on it mixed in.
+    #[inline]
+    pub fn blood_at(&self, texel: u32, fx: f32, fy: f32) -> u32 {
+        let d = &self.dm;
+        if d.blood.is_empty() || fx < 0.0 || fy < 0.0 {
+            return texel;
+        }
+        let (tx, ty) = ((fx * BLOOD_RES as f32) as usize, (fy * BLOOD_RES as f32) as usize);
+        if tx >= d.blood_w {
+            return texel;
+        }
+        let Some(&b) = d.blood.get(ty * d.blood_w + tx) else { return texel };
+        if b == 0 {
+            return texel;
+        }
+        let k = b as f32 / 255.0 * 0.85;
+        let mix = |c: u32, to: f32| ((c & 0xff) as f32 * (1.0 - k) + to * k) as u8;
+        rgba(mix(texel, 96.0), mix(texel >> 8, 8.0), mix(texel >> 16, 6.0), 255)
     }
 
     fn blit_tex(&mut self, idx: usize, x0: f32, y0: f32, size: f32, l: [f32; 3]) {

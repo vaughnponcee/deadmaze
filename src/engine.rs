@@ -132,7 +132,7 @@ impl Game {
                 self.try_move(mx / len * speed / steps as f32, my / len * speed / steps as f32);
             }
         }
-        self.play(dt, input);
+        self.play(dt, input, mouse_dx);
     }
 
     // ---------------------------------------------------------------- lighting
@@ -146,8 +146,8 @@ impl Game {
             self.active.push(Light { x: self.x, y: self.y, color: [0.95 * f, 0.8 * f, 0.6 * f], radius: 3.4, flicker: 0.0 });
         }
         if self.dm.muzzle > 0.0 {
-            let k = self.dm.muzzle * 14.0;
-            self.active.push(Light { x: self.x + self.angle.cos() * 0.6, y: self.y + self.angle.sin() * 0.6, color: [2.2 * k, 1.6 * k, 0.8 * k], radius: 6.0, flicker: 0.0 });
+            let k = self.dm.muzzle * 7.0; // a brief warm glow, not a floodlight
+            self.active.push(Light { x: self.x + self.angle.cos() * 0.6, y: self.y + self.angle.sin() * 0.6, color: [1.3 * k, 0.95 * k, 0.5 * k], radius: 4.0, flicker: 0.0 });
         }
         for l in &self.map.lights {
             let d2 = (l.x - self.x).powi(2) + (l.y - self.y).powi(2);
@@ -262,6 +262,7 @@ impl Game {
                 } else {
                     (rgba(90, 85, 78, 255), rgba(50, 45, 40, 255))
                 };
+                let ft = self.blood_at(ft, fx, fy);
                 self.fb[y * w + x] = Self::lit(ft, l, fog);
                 // ceiling is a little darker: lights hang below it
                 self.fb[cy * w + x] = Self::lit(ct, [l[0] * 0.8, l[1] * 0.8, l[2] * 0.8], fog);
@@ -367,7 +368,7 @@ impl Game {
                     let mut c = Self::lit(texel, l, fog);
                     if flash > 0.0 {
                         // hit flash: push toward bright red
-                        let f = flash.min(1.0) * 0.6;
+                        let f = flash.min(1.0) * 0.35;
                         let r = (c & 0xff) as f32 * (1.0 - f) + 255.0 * f;
                         let g = ((c >> 8) & 0xff) as f32 * (1.0 - f * 0.7);
                         let b = ((c >> 16) & 0xff) as f32 * (1.0 - f * 0.7);

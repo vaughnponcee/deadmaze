@@ -7,6 +7,7 @@
 pub mod engine;
 pub mod map;
 pub mod play;
+pub mod viewmodel;
 pub mod ray;
 pub mod tex;
 
