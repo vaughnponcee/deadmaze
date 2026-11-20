@@ -86,10 +86,12 @@ pub struct Dm {
     pub vdepth: Vec<f32>,
     /// blood on the floor: BLOOD_RES texels per map cell, 0 = clean
     pub blood: Vec<u8>,
+    /// bodies lying on the floor, same grid: 0 none, 1 skin, 2 shirt, 3 trousers, 4 shoes
+    pub body: Vec<u8>,
     pub blood_w: usize,
 }
 
-pub const BLOOD_RES: usize = 8;
+pub const BLOOD_RES: usize = 16;
 
 impl Default for Dm {
     fn default() -> Dm {
@@ -100,7 +102,7 @@ impl Default for Dm {
             zombies: Vec::with_capacity(64), loot: Vec::with_capacity(32),
             flow: vec![], flow_cell: (-1, -1), pickup: 0, pickup_n: 0, rng: Rng::new(12345),
             sway: 0.0, switch_t: 0.0, prev_gun: 0, last_gun: 0,
-            vm: (0..3).map(viewmodel::build).collect(), vdepth: vec![], blood: vec![], blood_w: 0,
+            vm: (0..3).map(viewmodel::build).collect(), vdepth: vec![], blood: vec![], body: vec![], blood_w: 0,
         }
     }
 }
@@ -111,7 +113,7 @@ const MAX_ALIVE: usize = 28;
 impl Game {
     pub fn seed_play(&mut self, seed: u32) {
         let bw = self.map.w * BLOOD_RES;
-        self.dm = Dm { rng: Rng::new(seed ^ 0x9e37_79b9), blood: vec![0; bw * self.map.h * BLOOD_RES], blood_w: bw, ..Dm::default() };
+        self.dm = Dm { rng: Rng::new(seed ^ 0x9e37_79b9), blood: vec![0; bw * self.map.h * BLOOD_RES], body: vec![0; bw * self.map.h * BLOOD_RES], blood_w: bw, ..Dm::default() };
     }
 
     pub fn alive(&self) -> usize {
@@ -313,7 +315,8 @@ impl Game {
             self.dm.zombies[i] = z;
         }
         // corpses sink away after 10 s
-        self.dm.zombies.retain(|z| z.hp > 0.0 || z.dead_t < 10.0);
+        // the dead are painted flat onto the floor (see paint_body), not drawn as sprites
+        self.dm.zombies.retain(|z| z.hp > 0.0);
     }
 
     // ---------------------------------------------------------------- shooting
@@ -392,6 +395,7 @@ impl Game {
         }
         let z = self.dm.zombies[i];
         if z.hp <= 0.0 {
+            self.paint_body(z.x, z.y, angle);
             // a pool where it fell: a few overlapping blobs, not a circle
             for _ in 0..5 {
                 let (ox, oy) = ((self.dm.rng.f32() - 0.5) * 0.5, (self.dm.rng.f32() - 0.5) * 0.5);
@@ -453,10 +457,8 @@ impl Game {
         for l in &self.dm.loot {
             self.draw.push((l.x, l.y, l.kind as usize, 0.0));
         }
-        for z in &self.dm.zombies {
-            let tex = if z.hp <= 0.0 {
-                SpriteKind::ZombieDead
-            } else if (z.step as i32) % 2 == 0 {
+        for z in self.dm.zombies.iter().filter(|z| z.hp > 0.0) {
+            let tex = if (z.step as i32) % 2 == 0 {
                 SpriteKind::ZombieA
             } else {
                 SpriteKind::ZombieB
@@ -538,6 +540,46 @@ impl Game {
         }
     }
 
+    /// Paint a zombie lying flat on the floor, head toward where the shot
+    /// pushed it. Built in body space: u runs feet (-) to head (+), v across.
+    pub fn paint_body(&mut self, x: f32, y: f32, angle: f32) {
+        let d = &mut self.dm;
+        if d.body.is_empty() {
+            return;
+        }
+        let res = BLOOD_RES as f32;
+        let (bw, bh) = (d.blood_w as i32, (d.body.len() / d.blood_w) as i32);
+        // fall roughly along the shot, with some variety
+        let a = angle + (d.rng.f32() - 0.5) * 0.8;
+        let (ca, sa) = (a.cos(), a.sin());
+        let arm = (d.rng.f32() - 0.5) * 0.3; // arms flung a bit differently each time
+        let r = 0.6;
+        for ty in ((y - r) * res) as i32..=((y + r) * res) as i32 {
+            for tx in ((x - r) * res) as i32..=((x + r) * res) as i32 {
+                if tx < 0 || ty < 0 || tx >= bw || ty >= bh {
+                    continue;
+                }
+                let (px, py) = ((tx as f32 + 0.5) / res - x, (ty as f32 + 0.5) / res - y);
+                let u = px * ca + py * sa; // along the body
+                let v = -px * sa + py * ca; // across
+                let part = if (u - 0.36).powi(2) + v * v < 0.085 * 0.085 {
+                    1 // head
+                } else if (-0.02..0.28).contains(&u) && v.abs() < 0.12 {
+                    2 // torso
+                } else if (0.05..0.34).contains(&(u - (v.abs() - 0.12) * arm)) && (0.12..0.19).contains(&v.abs()) {
+                    if u > 0.26 { 1 } else { 2 } // arms, hands at the end
+                } else if (-0.42..-0.02).contains(&u) && (0.015..0.1).contains(&v.abs()) {
+                    if u < -0.36 { 4 } else { 3 } // legs, shoes
+                } else {
+                    0
+                };
+                if part != 0 {
+                    d.body[(ty * bw + tx) as usize] = part;
+                }
+            }
+        }
+    }
+
     /// Floor texel with any blood on it mixed in.
     #[inline]
     pub fn blood_at(&self, texel: u32, fx: f32, fy: f32) -> u32 {
@@ -549,7 +591,18 @@ impl Game {
         if tx >= d.blood_w {
             return texel;
         }
-        let Some(&b) = d.blood.get(ty * d.blood_w + tx) else { return texel };
+        let i = ty * d.blood_w + tx;
+        let Some(&b) = d.blood.get(i) else { return texel };
+        let part = d.body[i];
+        if part != 0 {
+            // a little per-texel grit so the body isn't flat colour
+            let n = 0.85 + 0.3 * ((i as u32).wrapping_mul(2654435761) >> 24) as f32 / 255.0;
+            let c = match part { 1 => [104.0, 132.0, 92.0], 2 => [92.0, 78.0, 64.0], 3 => [52.0, 58.0, 74.0], _ => [40.0, 34.0, 30.0] };
+            // soaked in blood where the pool is
+            let k = b as f32 / 255.0 * 0.45;
+            let f = |v: f32, to: f32| ((v * n) * (1.0 - k) + to * k).min(255.0) as u8;
+            return rgba(f(c[0], 96.0), f(c[1], 8.0), f(c[2], 6.0), 255);
+        }
         if b == 0 {
             return texel;
         }

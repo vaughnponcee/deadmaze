@@ -133,3 +133,13 @@ fn view_model_draws_in_3d() {
     for y in h / 2..h { for x in w / 2..w { if g.fb[y * w + x] != before[y * w + x] { differs += 1; } } }
     assert!(differs > 100, "recoil should move the gun ({differs} px changed)");
 }
+
+#[test]
+fn the_dead_lie_flat_on_the_floor() {
+    let mut g = game();
+    g.dm.zombies.push(zombie(4.5, 1.5, 10.0));
+    g.update(1.0 / 60.0, FIRE, 0.0);
+    g.update(1.0 / 60.0, 0, 0.0); // cleared on the next frame
+    assert!(g.dm.zombies.is_empty(), "a dead zombie must not stay a standing sprite");
+    assert!(g.dm.body.iter().filter(|&&p| p != 0).count() > 30, "no body painted on the floor");
+}

@@ -30,7 +30,7 @@ cargo test
 
 - **Frame time:** 5.1 ms per frame in WebAssembly at 480x270 (headless Edge, 300 frames with two zombies in view and shooting). The page scales that up with pixelated filtering.
 - **Size:** the wasm module is 107 KiB. All textures are generated in code at startup.
-- **Tests:** 23. They cover:
+- **Tests:** 26. They cover:
   - raycasting distances;
   - maze connectivity: every open cell is reachable, so zombies can always get to you;
   - hits, walls blocking bullets, semi-auto versus automatic fire;

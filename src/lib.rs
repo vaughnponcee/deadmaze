@@ -99,7 +99,7 @@ pub extern "C" fn rc_stat(i: u32) -> f32 {
 pub extern "C" fn rc_debug_spawn(dist: f32) {
     if let Some(g) = game() {
         let (x, y) = (g.x + g.angle.cos() * dist, g.y + g.angle.sin() * dist);
-        g.dm.zombies.push(play::Zombie { x, y, hp: 1000.0, speed: 0.0, flash: 0.0, attack: 99.0, step: 0.0, dead_t: 0.0 });
+        g.dm.zombies.push(play::Zombie { x, y, hp: 70.0, speed: 0.0, flash: 0.0, attack: 99.0, step: 0.0, dead_t: 0.0 });
     }
 }
 
